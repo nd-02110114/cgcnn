@@ -1,0 +1,6 @@
+nvm is not compatible with the npm config "prefix" option: currently set to "/misc/home/dnishikawa/.nvm/versions/node/v10.16.0"
+Run `nvm use --delete-prefix v10.16.0 --silent` to unset it.
+/misc/home/dnishikawa/venv/pytorch/lib/python3.6/site-packages/pymatgen/io/cif.py:1101: UserWarning: Issues encountered while parsing CIF: Some fractional co-ordinates rounded to ideal values to avoid finite precision errors.
+  warnings.warn("Issues encountered while parsing CIF: %s" % "\n".join(self.errors))
+/misc/home/dnishikawa/git_code/github.com/nd-02110114/cgcnn/cgcnn/data.py:333: UserWarning: 995393 not find enough neighbors to build graph. If it happens frequently, consider increase radius.
+  'radius.'.format(cif_id))
