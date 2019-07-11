@@ -23,6 +23,7 @@ class ConvLayer(nn.Module):
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.nbr_fea_len = nbr_fea_len
+        # (2*64 + 41) → (2 * 64) のFC層
         self.fc_full = nn.Linear(2*self.atom_fea_len+self.nbr_fea_len,
                                  2*self.atom_fea_len)
         self.sigmoid = nn.Sigmoid()
@@ -56,24 +57,57 @@ class ConvLayer(nn.Module):
 
         """
         # TODO will there be problems with the index zero padding?
+        # Nは、バッチ内の全原子数(サイト数)
+        # Mは、近接原子数=12
         N, M = nbr_fea_idx.shape
         # convolution
+        # 近接原子のベクトルを抜き出す -> N × M × 64
         atom_nbr_fea = atom_in_fea[nbr_fea_idx, :]
+        assert atom_nbr_fea.shape == (N, M, 64)
+        # 各次元の確認
+        assert atom_in_fea.shape == (N, 64)
+        # この挙動は...? (この後にextendで(N, M, 64)に変換)
+        assert atom_in_fea.unsqueeze(1).shape == (N, 1, 64)
+        # atom_in_fea.unsqueeze(1).expand(N, M, self.atom_fea_len) : 着目している原子に関するベクトル 64次元
+        # atom_nbr_fea : 近接原子に関するベクトル(各近接原子によって異なる) 64次元
+        # nbr_fea : 距離に関するベクトル 41次元
         total_nbr_fea = torch.cat(
             [atom_in_fea.unsqueeze(1).expand(N, M, self.atom_fea_len),
              atom_nbr_fea, nbr_fea], dim=2)
+
+        # 最終的な各原子が持つベクトルの次元は169次元
+        assert total_nbr_fea.shape == (N, M, (2*64+41))
+        # FC層 169 -> 128
         total_gated_fea = self.fc_full(total_nbr_fea)
+        # batch norm
+        # なんで次元落としてからbatch norm...?
         total_gated_fea = self.bn1(total_gated_fea.view(
             -1, self.atom_fea_len*2)).view(N, M, self.atom_fea_len*2)
+        assert total_gated_fea.shape == (N, M, 2*self.atom_fea_len)
+        
+        # 128次元を仲良く分割
+        # なんで...?
         nbr_filter, nbr_core = total_gated_fea.chunk(2, dim=2)
+        assert nbr_filter.shape == (N, M, 64)
+        assert nbr_core.shape == (N, M, 64)
+
+        # activationに通す
         nbr_filter = self.sigmoid(nbr_filter)
         nbr_core = self.softplus1(nbr_core)
+
+        # activationした後の各隣接原子のベクトルを足す (readout)
         nbr_sumed = torch.sum(nbr_filter * nbr_core, dim=1)
+        assert nbr_sumed.shape == (N, 64)
+        # batch norm 
         nbr_sumed = self.bn2(nbr_sumed)
+        # 前回の情報に今回得られたnbr_sumedを足して更新ベクトルを得る (次のatom_in_feaになる)
         out = self.softplus2(atom_in_fea + nbr_sumed)
+        assert out.shape == (N, 64)
         return out
 
 
+# pytorchのnn.Moduleをextendしたクラスはforward処理が必要
+# forwardを書けばbackwardは勝手に計算してくれる
 class CrystalGraphConvNet(nn.Module):
     """
     Create a crystal graph convolutional neural network for predicting total
@@ -103,12 +137,18 @@ class CrystalGraphConvNet(nn.Module):
         """
         super(CrystalGraphConvNet, self).__init__()
         self.classification = classification
+        # 92 → 64 (default)
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
+        # convolutionのlayer作成 (3層)
         self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
                                     nbr_fea_len=nbr_fea_len)
                                     for _ in range(n_conv)])
+        # FC層 (64 → 128)
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
+        # softplusの活性化関数
         self.conv_to_fc_softplus = nn.Softplus()
+
+        # defaultでは n_h = 1
         if n_h > 1:
             self.fcs = nn.ModuleList([nn.Linear(h_fea_len, h_fea_len)
                                       for _ in range(n_h-1)])
@@ -127,7 +167,7 @@ class CrystalGraphConvNet(nn.Module):
         Forward pass
 
         N: Total number of atoms in the batch
-        M: Max number of neighbors
+        M: Max number of neighbors (12)
         N0: Total number of crystals in the batch
 
         Parameters
@@ -149,20 +189,40 @@ class CrystalGraphConvNet(nn.Module):
           Atom hidden features after convolution
 
         """
+
+        # 92 → 64 (default)
         atom_fea = self.embedding(atom_fea)
+
+        # convolution層
         for conv_func in self.convs:
             atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx)
+        
+        # pooling (後で定義してある, ここでcrystal_atom_idxを使う)
+        # cif_id ごとの特徴ベクトルの抽出に成功
         crys_fea = self.pooling(atom_fea, crystal_atom_idx)
-        crys_fea = self.conv_to_fc(self.conv_to_fc_softplus(crys_fea))
+        # softplus
         crys_fea = self.conv_to_fc_softplus(crys_fea)
+        # FC
+        crys_fea = self.conv_to_fc(crys_fea)
+        # softplus
+        crys_fea = self.conv_to_fc_softplus(crys_fea)
+
         if self.classification:
             crys_fea = self.dropout(crys_fea)
+
+        # 1層以上のFC層を要求する場合 (default: 1層)
         if hasattr(self, 'fcs') and hasattr(self, 'softpluses'):
             for fc, softplus in zip(self.fcs, self.softpluses):
+                # activationは毎回softplus...?
                 crys_fea = softplus(fc(crys_fea))
+
+        # 出力
         out = self.fc_out(crys_fea)
+
+        # 分類の場合は最後にsoftmaxに通す
         if self.classification:
             out = self.logsoftmax(out)
+
         return out
 
     def pooling(self, atom_fea, crystal_atom_idx):
@@ -182,6 +242,10 @@ class CrystalGraphConvNet(nn.Module):
         """
         assert sum([len(idx_map) for idx_map in crystal_atom_idx]) ==\
             atom_fea.data.shape[0]
+
+        # Average Poolingを採用している
+        # N × 64 -> batch_size × 64
         summed_fea = [torch.mean(atom_fea[idx_map], dim=0, keepdim=True)
                       for idx_map in crystal_atom_idx]
+        
         return torch.cat(summed_fea, dim=0)

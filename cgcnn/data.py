@@ -24,6 +24,9 @@ def get_train_val_test_loader(dataset, collate_fn=default_collate,
 
     !!! The dataset needs to be shuffled before using the function !!!
 
+    学習用のデータの成形 (バッチサイズやtrain, valid, testなど)
+    注意するべき点は、カスタムのcollate_fnを渡している点
+
     Parameters
     ----------
     dataset: torch.utils.data.Dataset
@@ -74,6 +77,8 @@ def get_train_val_test_loader(dataset, collate_fn=default_collate,
         indices[-(valid_size + test_size):-test_size])
     if return_test:
         test_sampler = SubsetRandomSampler(indices[-test_size:])
+
+    # DataLoaderは、Datasetクラスを受け取ってバッチサイズやシャッフルをして返す
     train_loader = DataLoader(dataset, batch_size=batch_size,
                               sampler=train_sampler,
                               num_workers=num_workers,
@@ -136,11 +141,14 @@ def collate_pool(dataset_list):
         batch_atom_fea.append(atom_fea)
         batch_nbr_fea.append(nbr_fea)
         batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
+        # atomの連番が入る (batch内全データでユニーク)
+        # 使いどころがわからん...
         new_idx = torch.LongTensor(np.arange(n_i)+base_idx)
         crystal_atom_idx.append(new_idx)
         batch_target.append(target)
         batch_cif_ids.append(cif_id)
         base_idx += n_i
+
     return (torch.cat(batch_atom_fea, dim=0),
             torch.cat(batch_nbr_fea, dim=0),
             torch.cat(batch_nbr_fea_idx, dim=0),
@@ -152,6 +160,9 @@ def collate_pool(dataset_list):
 class GaussianDistance(object):
     """
     Expands the distance by Gaussian basis.
+
+    ガウス基底を利用して距離を高次元に変換している処理
+    なんでこんなことしているのか...?
 
     Unit: angstrom
     """
@@ -190,6 +201,9 @@ class GaussianDistance(object):
           Expanded distance matrix with the last dimension of length
           len(self.filter)
         """
+        # 次元を一つ追加する
+        assert distances[..., np.newaxis].shape == (distances.shape[0], distances.shape[1], 1)
+        # filterを引くと最後の次元がfilterの次元にキャストされる
         return np.exp(-(distances[..., np.newaxis] - self.filter)**2 /
                       self.var**2)
 
@@ -229,6 +243,8 @@ class AtomCustomJSONInitializer(AtomInitializer):
     Initialize atom feature vectors using a JSON file, which is a python
     dictionary mapping from element number to a list representing the
     feature vector of the element.
+
+    各原子の初期の特徴ベクトルの値をjsonから読みこむクラス
 
     Parameters
     ----------
@@ -270,6 +286,8 @@ class CIFData(Dataset):
     ID.cif: a CIF file that recodes the crystal structure, where ID is the
     unique ID for the crystal.
 
+    Datasetクラスの役割的には、dataの前処理を施すところらしい
+
     Parameters
     ----------
 
@@ -309,42 +327,71 @@ class CIFData(Dataset):
         random.shuffle(self.id_prop_data)
         atom_init_file = os.path.join(self.root_dir, 'atom_init.json')
         assert os.path.exists(atom_init_file), 'atom_init.json does not exist!'
+        # 原子それぞれについての初期ベクトル 
+        # (ex: { H: [0, 0, ・・・, 1], He: [0, 1, ・・・, 0], ・・・・})
         self.ari = AtomCustomJSONInitializer(atom_init_file)
         self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step)
 
+    # __len__は、len(dataset)で実行されたときにコールされる関数
     def __len__(self):
         return len(self.id_prop_data)
 
+    # __len__は、dataset[i]で実行されたときにコールされる関数
     @functools.lru_cache(maxsize=None)  # Cache loaded structures
     def __getitem__(self, idx):
         cif_id, target = self.id_prop_data[idx]
-        crystal = Structure.from_file(os.path.join(self.root_dir,
-                                                   cif_id+'.cif'))
+        # print(cif_id)
+        crystal = Structure.from_file(os.path.join(self.root_dir, cif_id+'.cif'))
+
+        # 原子の初期ベクトルを集める (vstackは縦につむ)
+        # 次元 原子数 × 特徴ベクトル
         atom_fea = np.vstack([self.ari.get_atom_fea(crystal[i].specie.number)
                               for i in range(len(crystal))])
-        atom_fea = torch.Tensor(atom_fea)
+        # atom_fea = torch.Tensor(atom_fea)
+        # get_all_neighbors : 各サイトの近くの原子を取り出す(len(all_nbr) = サイト数)
+        # include_index = True なので indexも取り出す
         all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
         all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
         nbr_fea_idx, nbr_fea = [], []
         for nbr in all_nbrs:
+            # graphを構築するには12以上の周囲の原子が必要??
+            # 12個くらいあれば第２近接原子レベルまでは取れる 
+            # → これについてはVoronoi構造を用いた改善手法が提案されている
             if len(nbr) < self.max_num_nbr:
+                # get_all_neighborsで12個以上取れなかった場合
                 warnings.warn('{} not find enough neighbors to build graph. '
                               'If it happens frequently, consider increase '
                               'radius.'.format(cif_id))
+                # 足りない分は0埋め
                 nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
                                    [0] * (self.max_num_nbr - len(nbr)))
+                # 足りない分はradius + 1で埋め
+                # 距離を取得している
                 nbr_fea.append(list(map(lambda x: x[1], nbr)) +
                                [self.radius + 1.] * (self.max_num_nbr -
                                                      len(nbr)))
             else:
+                # get_all_neighborsで12個以上取れた場合
                 nbr_fea_idx.append(list(map(lambda x: x[2],
                                             nbr[:self.max_num_nbr])))
                 nbr_fea.append(list(map(lambda x: x[1],
                                         nbr[:self.max_num_nbr])))
+
         nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
+        # nbr_fea: site数 × 12
+        site_num = len(crystal)
+        assert nbr_fea.shape == (site_num, self.max_num_nbr)
+        # ガウス基底を使って次元を増やす
+        # なんでこれやっているのか...?
         nbr_fea = self.gdf.expand(nbr_fea)
         atom_fea = torch.Tensor(atom_fea)
         nbr_fea = torch.Tensor(nbr_fea)
         nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
         target = torch.Tensor([float(target)])
+        # atom_fea : site数 × 92次元(固定, 原子の特徴ベクトル)
+        assert atom_fea.shape == (site_num, 92)
+        # nbr_fea : site数 × 12 (max_num_nbr) × filterの次元 (default: 41, 変えることも可能)
+        assert nbr_fea.shape == (site_num, self.max_num_nbr, 41) 
+        # nbr_fea_idx : site数 × 12 (max_num_nbr)
+        assert nbr_fea_idx.shape == (site_num, self.max_num_nbr)
         return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id

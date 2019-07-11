@@ -93,3 +93,10 @@ Local
 
 # .DS_Store
 .DS_Store
+
+# cif
+*.cif
+
+# shell
+output
+*.sh.*
