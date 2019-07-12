@@ -159,6 +159,7 @@ class CrystalGraphConvNet(nn.Module):
         else:
             self.fc_out = nn.Linear(h_fea_len, 1)
         if self.classification:
+            # nn.NLLLoss()を使っているからLogのSoftmaxを使う
             self.logsoftmax = nn.LogSoftmax(dim=1)
             self.dropout = nn.Dropout()
 

@@ -139,6 +139,7 @@ def main():
 
     # define loss func and optimizer
     if args.task == 'classification':
+        # 入力が対数確率である必要
         criterion = nn.NLLLoss()
     else:
         criterion = nn.MSELoss()
@@ -167,6 +168,8 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
+    # scheduler : 学習率を動的に変更する役割を担う
+    # milestone : 変更するepoch数の設定, 閾値を超えるごとにgamma倍する
     scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
                             gamma=0.1)
 
@@ -188,6 +191,7 @@ def main():
             is_best = mae_error < best_mae_error
             best_mae_error = min(mae_error, best_mae_error)
         else:
+            # 負の値だから不等式が逆になる
             is_best = mae_error > best_mae_error
             best_mae_error = max(mae_error, best_mae_error)
         save_checkpoint({
@@ -228,6 +232,10 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
         data_time.update(time.time() - end)
 
         if args.cuda:
+            # GPUを使う時は、.cuda()で変換する必要がある
+            # Variableはバックプロパゲーションに必要な情報の取り扱いをしてくれる
+            # input[2] or [3](batch_nbr_fea_idx, crystal_atom_idx)
+            # => 自分で導入したidxなので計算グラフに必要ない
             input_var = (Variable(input[0].cuda(non_blocking=True)),
                          Variable(input[1].cuda(non_blocking=True)),
                          input[2].cuda(non_blocking=True),
@@ -254,6 +262,7 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
         # measure accuracy and record loss
         if args.task == 'regression':
             mae_error = mae(normalizer.denorm(output.data.cpu()), target)
+            # 評価値の保存
             losses.update(loss.data.cpu(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
         else:
@@ -267,8 +276,11 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
             auc_scores.update(auc_score, target.size(0))
 
         # compute gradient and do SGD step
+        # 勾配の初期化
         optimizer.zero_grad()
+        # 勾配の計算
         loss.backward()
+        # パラメータの更新
         optimizer.step()
 
         # measure elapsed time
