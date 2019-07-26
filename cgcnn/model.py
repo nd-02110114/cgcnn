@@ -57,17 +57,19 @@ class ConvLayer(nn.Module):
 
         """
         # TODO will there be problems with the index zero padding?
-        # Nは、バッチ内の全原子数(サイト数)
-        # Mは、近接原子数=12
+        # Nは、Node数
+        # Mは、近接原子数=12 (Edge数: 大きさは固定, 12より少ない場合は0埋めされている)
         N, M = nbr_fea_idx.shape
         # convolution
         # 近接原子のベクトルを抜き出す -> N × M × 64
+        # 64：Nodeベクトルの次元
         atom_nbr_fea = atom_in_fea[nbr_fea_idx, :]
         assert atom_nbr_fea.shape == (N, M, 64)
         # 各次元の確認
         assert atom_in_fea.shape == (N, 64)
         # この挙動は...? (この後にextendで(N, M, 64)に変換)
         assert atom_in_fea.unsqueeze(1).shape == (N, 1, 64)
+        # 式(5)のzベクトルを作成する処理
         # atom_in_fea.unsqueeze(1).expand(N, M, self.atom_fea_len) : 着目している原子に関するベクトル 64次元
         # atom_nbr_fea : 近接原子に関するベクトル(各近接原子によって異なる) 64次元
         # nbr_fea : 距離に関するベクトル 41次元

@@ -162,7 +162,7 @@ class GaussianDistance(object):
     Expands the distance by Gaussian basis.
 
     ガウス基底を利用して距離を高次元に変換している処理
-    なんでこんなことしているのか...?
+    なんでこんなことしているのか...? => ベクトルに修正している
 
     Unit: angstrom
     """
@@ -365,8 +365,7 @@ class CIFData(Dataset):
                 # 足りない分は0埋め
                 nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
                                    [0] * (self.max_num_nbr - len(nbr)))
-                # 足りない分はradius + 1で埋め
-                # 距離を取得している
+                # 足りない分はradius + 1で埋め (使わなさそうだから関係ない?)
                 nbr_fea.append(list(map(lambda x: x[1], nbr)) +
                                [self.radius + 1.] * (self.max_num_nbr -
                                                      len(nbr)))
@@ -378,7 +377,7 @@ class CIFData(Dataset):
                                         nbr[:self.max_num_nbr])))
 
         nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
-        # nbr_fea: site数 × 12
+        # nbr_fea: node数 × 12
         site_num = len(crystal)
         assert nbr_fea.shape == (site_num, self.max_num_nbr)
         # ガウス基底を使って次元を増やす
@@ -388,10 +387,10 @@ class CIFData(Dataset):
         nbr_fea = torch.Tensor(nbr_fea)
         nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
         target = torch.Tensor([float(target)])
-        # atom_fea : site数 × 92次元(固定, 原子の特徴ベクトル)
+        # atom_fea : node数 × 92次元(固定, nodeベクトルの次元)
         assert atom_fea.shape == (site_num, 92)
-        # nbr_fea : site数 × 12 (max_num_nbr) × filterの次元 (default: 41, 変えることも可能)
+        # nbr_fea : node数 × 12 (max_num_nbr: Edge数 = 隣接Nodeの数) × Edgeベクトルの次元 (default: 41, 変えることも可能)
         assert nbr_fea.shape == (site_num, self.max_num_nbr, 41) 
-        # nbr_fea_idx : site数 × 12 (max_num_nbr)
+        # nbr_fea_idx : node数 × 12 (max_num_nbr: Edge数)
         assert nbr_fea_idx.shape == (site_num, self.max_num_nbr)
         return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id
